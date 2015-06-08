@@ -2,7 +2,7 @@
 # -*- coding: UTF8 -*-
 
 """
-author: Guillaume Bouvier
+author: Guillaume Bouvier, Yannick Spill
 email: guillaume.bouvier@ens-cachan.org
 creation date: 2014 04 02
 license: GNU GPL
@@ -38,15 +38,30 @@ if run_from_ipython():
 
 class SOM(object):
     """A class to perform a variety of SOM-based analysis (any dimensions and shape)
+    Specialized for data describing the PTPN4 dimer connected by a linker, in the following format
+    - xyz coordinates of PDZ center of mass in PTP reference frame
+    - uvwt quaternion of rotation of PDZ wrt PTP
+    - the remaining integers are residue numbers. We go along the linker between
+      PTP and PDZ, and we report the residue on the proteins which is closest to
+      the current residue.
+    Metric used for comparison:
+        - xyz: euclidian
+        - quaternion: slerp (geodesic)
+        - linker indices: hamming
     """
     def __init__(self, input_matrix=None, from_map=None):
         self.input_matrix = input_matrix
-        mmin = numpy.min(input_matrix, axis=0)
-        mmax = numpy.max(input_matrix, axis=0)
-        self.k = numpy.sqrt((((mmax-mmin)[:3])**2).sum())/numpy.pi # coefficient to scale geodesic distance with Euclidean distance
-        if input_matrix != None:
-            self.ncom = self.input_matrix.shape[1] / 7 #number of center of mass
-            print "%d rigid bodies"%self.ncom
+        mmin = numpy.min(input_matrix[:,:3], axis=0)
+        mmax = numpy.max(input_matrix[:,:3], axis=0)
+        self.k = numpy.sqrt(((mmax-mmin)**2).sum())/numpy.pi # coefficient to scale geodesic distance with Euclidean distance
+        self.ncom = 1
+        print "2 rigid bodies with linker"
+        try:
+            for i in input_matrix[:,6:]:
+                for j in i:
+                    int(j)
+        except:
+            sys.exit("Weird input data, expected castable to int after 7th column")
         try:
             __IPYTHON__
             self.ipython = True
@@ -305,18 +320,26 @@ class SOM(object):
         self.smap = smap
         return self.smap
 
-    def rigidbody_dist(self, smap, vector):
+    def ptpn4_dist(self, smap, vector):
         k = self.k
         ncoords = self.ncom * 3
         shape = list(smap.shape)
         neurons = reduce(lambda x,y: x*y, shape[:-1], 1)
-        sqeucl = scipy.spatial.distance.cdist(smap.reshape((neurons, shape[-1]))[:,:ncoords], vector[None,:ncoords], 'sqeuclidean')
+        re_smap = smap.reshape((neurons, shape[-1]))
+        #com
+        sqeucl = scipy.spatial.distance.cdist(re_smap[:,:ncoords], vector[None,:ncoords], 'sqeuclidean')
+        #quaternion
         qdist = 0
         for i in range(self.ncom):
             a = ncoords + i*4
             b = ncoords + (i+1)*4
-            qdist += (2*numpy.arccos(abs(1-scipy.spatial.distance.cdist(smap.reshape(neurons,shape[-1])[:,a:b], vector[None,a:b], 'cosine'))))**2
-        return sqeucl[:,0] + k*qdist[:,0]
+            qdist += (2*numpy.arccos(abs(1-scipy.spatial.distance.cdist(
+                              re_smap[:,a:b], vector[None,a:b], 'cosine'))))**2
+        #hamming
+        hdist = scipy.spatial.distance.cdist(numpy.asarray(re_smap[:,b:], dtype=int),
+                                             numpy.asarray(vector[None,b:], dtype=int),
+                                             'hamming')**2
+        return sqeucl[:,0] + k*qdist[:,0] + k*numpy.pi*hdist
 
     def findbmu(self, smap, vector, n_cpu=1, returndist=False):
         if numpy.ma.isMaskedArray(vector):
@@ -324,7 +347,7 @@ class SOM(object):
             vector = numpy.asarray(vector[numpy.asarray(1-vector.mask, dtype=bool)])
         shape = list(smap.shape)
         neurons = reduce(lambda x,y: x*y, shape[:-1], 1)
-        d = self.rigidbody_dist(smap, vector)
+        d = self.ptpn4_dist(smap, vector)
         if returndist:
             r = list(numpy.unravel_index(numpy.argmin(d), tuple(shape[:-1])))
             r.append(d.min())
@@ -432,6 +455,19 @@ class SOM(object):
                             - q1[None,:]*b[negcase][...,None]
         return retmat
 
+    def random_change(self, prob, values, candidates):
+        """
+        Randomly change values to those proposed, according to probability
+
+        Parameters:
+            prob       : array of probabilities to change, of shape (a,b)
+            values     : array of current values, shape (a,b,n)
+            candidates : array of candidate values, shape (n)
+        
+        """
+        mask = numpy.random.binomial(1, prob)[...,None]
+        return mask * candidates[None,None,:] + (1-mask)*values
+
     def apply_learning(self, smap, vector, bmu, radius, rate, func, params, batchlearn=False):
         toric, shape = params['toric'], params['shape']
         if numpy.ma.isMaskedArray(vector):
@@ -461,6 +497,9 @@ class SOM(object):
                 smap[...,qbegin:qbegin+4] = self.slerp(radmap,
                                                smap[...,qbegin:qbegin+4],
                                                vector[qbegin:qbegin+4])
+            #indicators, use random sampling
+            smap[...,qbegin+4:] = self.random_change(radmap,
+                    smap[...,qbegin+4:], vector[qbegin+4:])
         else:
             adjmap = radmap[..., None]
             return adjmap
@@ -476,8 +515,10 @@ class SOM(object):
             mmin = numpy.min(input_matrix, axis=0)
             mmax = numpy.max(input_matrix, axis=0)
             #smallshape = tuple([1]*len(map_shape)+[nvec])
-            for i in range(nvec):
+            for i in range(7):
                 smap[..., i] = numpy.random.uniform(mmin[i], mmax[i], map_shape)
+            for i in range(7, nvec):
+                smap[..., i] = numpy.random.randint(mmin[i], mmax[i]+1, map_shape)
             #normalize quaternions, TODO use linalg.norm instead
             for i,j in numpy.ndindex(*map_shape):
                 for rb in xrange(self.ncom):
@@ -501,7 +542,7 @@ class SOM(object):
             neuron = smap[point]
             neighbors = tuple(numpy.asarray(neighborhood(point, shape), dtype='int').T)
             #print neighbors
-            umatrix[point] = self.rigidbody_dist(smap[neighbors], neuron).mean()
+            umatrix[point] = self.ptpn4_dist(smap[neighbors], neuron).mean()
         return umatrix
 
     def getmatindex(self):
