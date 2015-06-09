@@ -48,6 +48,7 @@ class SOM(object):
         - xyz: euclidian
         - quaternion: slerp (geodesic)
         - linker indices: hamming
+    Note: if no linker proximity is provided, reverts to the rb dimer case
     """
     def __init__(self, input_matrix=None, from_map=None):
         self.input_matrix = input_matrix
@@ -336,10 +337,13 @@ class SOM(object):
             qdist += (2*numpy.arccos(abs(1-scipy.spatial.distance.cdist(
                               re_smap[:,a:b], vector[None,a:b], 'cosine'))))**2
         #hamming
-        hdist = scipy.spatial.distance.cdist(numpy.asarray(re_smap[:,b:], dtype=int),
-                                             numpy.asarray(vector[None,b:], dtype=int),
-                                             'hamming')**2
-        return sqeucl[:,0] + k*qdist[:,0] + k*numpy.pi*hdist[:,0]
+        if shape[-1] >= b+1:
+            hdist = scipy.spatial.distance.cdist(numpy.asarray(re_smap[:,b:], dtype=int),
+                                                 numpy.asarray(vector[None,b:], dtype=int),
+                                                 'hamming')**2
+            return sqeucl[:,0] + k*qdist[:,0] + k*numpy.pi*hdist[:,0]
+        else:
+            return sqeucl[:,0] + k*qdist[:,0]
 
     def findbmu(self, smap, vector, n_cpu=1, returndist=False):
         if numpy.ma.isMaskedArray(vector):
@@ -497,9 +501,10 @@ class SOM(object):
                 smap[...,qbegin:qbegin+4] = self.slerp(radmap,
                                                smap[...,qbegin:qbegin+4],
                                                vector[qbegin:qbegin+4])
-            #indicators, use random sampling
-            smap[...,qbegin+4:] = self.random_change(radmap,
-                    smap[...,qbegin+4:], vector[qbegin+4:])
+            if smap.shape[-1] >= qbegin+5:
+                #indicators, use random sampling
+                smap[...,qbegin+4:] = self.random_change(radmap,
+                        smap[...,qbegin+4:], vector[qbegin+4:])
         else:
             adjmap = radmap[..., None]
             return adjmap
