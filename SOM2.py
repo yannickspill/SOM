@@ -339,7 +339,7 @@ class SOM(object):
         hdist = scipy.spatial.distance.cdist(numpy.asarray(re_smap[:,b:], dtype=int),
                                              numpy.asarray(vector[None,b:], dtype=int),
                                              'hamming')**2
-        return sqeucl[:,0] + k*qdist[:,0] + k*numpy.pi*hdist
+        return sqeucl[:,0] + k*qdist[:,0] + k*numpy.pi*hdist[:,0]
 
     def findbmu(self, smap, vector, n_cpu=1, returndist=False):
         if numpy.ma.isMaskedArray(vector):
